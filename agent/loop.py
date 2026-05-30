@@ -151,7 +151,12 @@ def run_loop(
     ]
 
     for iteration in range(1, max_iterations + 1):
-        response = litellm.completion(model=model, messages=messages)
+        response = litellm.completion(
+            model=model,
+            messages=messages,
+            max_tokens=1024,
+            num_retries=4,
+        )
         content = response.choices[0].message.content or ""
 
         call = _parse_tool_call(content)
