@@ -207,6 +207,7 @@ jobs:
 | Disallowed shell command | `run_shell` returns error; LLM tries allowed variant |
 | Tests fail after fix | Agent can retry; if still failing at `finish`, opens draft PR |
 | Max iterations hit | Treated as `uncertain`; draft PR opened |
+| `finish(done)` called but no files changed | Treated as `uncertain`; draft PR opened with note |
 | GitHub API failure | Exception propagates; Actions job fails with log |
 | LLM API failure | Exception propagates; Actions job fails with log |
 
