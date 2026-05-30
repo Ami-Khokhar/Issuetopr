@@ -1,6 +1,7 @@
 import json
+import re
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Optional
 import litellm
 
 
@@ -12,111 +13,112 @@ class LoopResult:
     changed_files: list[str] = field(default_factory=list)
 
 
-SYSTEM_PROMPT = (
-    "You are a bug-fix agent. You have been given a GitHub issue describing a bug.\n"
-    "Your job is to:\n"
-    "1. Understand the bug from the issue.\n"
-    "2. Locate the relevant source files using your tools.\n"
-    "3. Make the minimal code change to fix the bug.\n"
-    "4. Verify the fix by running the test suite.\n"
-    "5. Call finish() when done.\n\n"
-    "Work methodically. Prefer small, targeted changes. Do not refactor unrelated code.\n"
-    "If you cannot confidently fix the bug, call finish with status='uncertain' and explain why."
-)
+SYSTEM_PROMPT = """You are a bug-fix agent. You have been given a GitHub issue describing a bug.
 
-TOOL_SCHEMAS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Read a file in the cloned repository",
-            "parameters": {
-                "type": "object",
-                "properties": {"path": {"type": "string", "description": "Relative file path"}},
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_file",
-            "description": "Write content to a file (creates or overwrites)",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "content": {"type": "string"},
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "grep_code",
-            "description": "Search for a pattern in the repository files",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string"},
-                    "path": {"type": "string", "description": "Optional subdirectory (default: repo root)"},
-                },
-                "required": ["pattern"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_directory",
-            "description": "List files and directories at a path",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Optional subdirectory (default: repo root)"}
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "run_shell",
-            "description": (
-                "Run a shell command (tests/linting only). "
-                "Allowed prefixes: pytest, python -m pytest, npm test, npm run test, "
-                "go test, cargo test, make test"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {"command": {"type": "string"}},
-                "required": ["command"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "finish",
-            "description": (
-                "Signal that you are done. "
-                "status='done' if fix is complete and tests pass, "
-                "'uncertain' if you could not confidently fix the bug."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "status": {"type": "string", "enum": ["done", "uncertain"]},
-                    "summary": {"type": "string", "description": "What you did or why you're uncertain"},
-                },
-                "required": ["status", "summary"],
-            },
-        },
-    },
-]
+Your job is to:
+1. Understand the bug from the issue.
+2. Locate the relevant source files using your tools.
+3. Make the minimal code change to fix the bug.
+4. Verify the fix by running the test suite.
+5. Call finish when done.
+
+Work methodically. Prefer small, targeted changes. Do not refactor unrelated code.
+If you cannot confidently fix the bug, call finish with status='uncertain' and explain why.
+
+## Available Tools
+
+You interact with the codebase by emitting a tool call. To call a tool, respond with ONLY a
+single JSON object on its own line, with no surrounding prose, no explanation, no markdown.
+
+Format: {"tool": "TOOL_NAME", "args": {...}}
+
+Available tools:
+- read_file       args: {"path": "relative/path.py"}
+- write_file      args: {"path": "relative/path.py", "content": "full new file contents"}
+- grep_code       args: {"pattern": "regex", "path": "optional/subdir"}
+- list_directory  args: {"path": "optional/subdir"}
+- run_shell       args: {"command": "pytest"} - allowed prefixes only: pytest, python -m pytest, npm test, npm run test, go test, cargo test, make test
+- finish          args: {"status": "done" | "uncertain", "summary": "what you did or why uncertain"}
+
+## Response Rules
+
+- Your entire response MUST be a single JSON object: {"tool": "...", "args": {...}}
+- No prose. No explanation. No markdown code fences. No multiple tool calls.
+- After each call you will see "OBSERVATION: <result>" - then emit the next tool call.
+- When the fix is complete and tests pass, call finish with status="done".
+"""
+
+
+_FN_TAG_INLINE_RE = re.compile(r"<function=([A-Za-z_][A-Za-z0-9_]*)\s*(\{.*?\})\s*>", re.DOTALL)
+_FN_TAG_BODY_RE = re.compile(r"<function=([A-Za-z_][A-Za-z0-9_]*)\s*>(\{.*?\})\s*</function>", re.DOTALL)
+_FENCED_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _try_load(s: str) -> Optional[dict]:
+    try:
+        obj = json.loads(s)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _normalize(name: str, args) -> Optional[dict]:
+    if not isinstance(args, dict):
+        return None
+    return {"tool": name, "args": args}
+
+
+def _parse_tool_call(content: str) -> Optional[dict]:
+    """Extract a {tool, args} call from a free-form LLM response.
+
+    Handles direct JSON, fenced JSON, Llama-style <function=NAME{...}> tags,
+    and bare balanced-brace substrings.
+    """
+    if not content:
+        return None
+    text = content.strip()
+
+    # 1. Direct JSON object: {"tool": ..., "args": ...}
+    obj = _try_load(text)
+    if obj and "tool" in obj:
+        return _normalize(obj["tool"], obj.get("args", {}))
+
+    # 2. Llama native: <function=NAME{...args}>  (args inside open tag)
+    m = _FN_TAG_INLINE_RE.search(text)
+    if m:
+        args = _try_load(m.group(2)) or {}
+        return _normalize(m.group(1), args)
+
+    # 3. Llama native: <function=NAME>{...args}</function>  (args between tags)
+    m = _FN_TAG_BODY_RE.search(text)
+    if m:
+        args = _try_load(m.group(2)) or {}
+        return _normalize(m.group(1), args)
+
+    # 4. Fenced JSON
+    for fm in _FENCED_RE.finditer(text):
+        obj = _try_load(fm.group(1))
+        if obj and "tool" in obj:
+            return _normalize(obj["tool"], obj.get("args", {}))
+
+    # 5. First balanced {...} containing "tool"
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            c = text[i]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    obj = _try_load(text[start:i + 1])
+                    if obj and "tool" in obj:
+                        return _normalize(obj["tool"], obj.get("args", {}))
+                    break
+        start = text.find("{", start + 1)
+
+    return None
 
 
 def run_loop(
@@ -132,59 +134,39 @@ def run_loop(
     ]
 
     for iteration in range(1, max_iterations + 1):
-        response = litellm.completion(
-            model=model,
-            messages=messages,
-            tools=TOOL_SCHEMAS,
-            tool_choice="auto",
-        )
-        message = response.choices[0].message
+        response = litellm.completion(model=model, messages=messages)
+        content = response.choices[0].message.content or ""
 
-        if not message.tool_calls:
+        call = _parse_tool_call(content)
+
+        if call is None:
             return LoopResult(
                 status="uncertain",
-                summary=message.content or "Agent stopped without calling finish()",
+                summary=content or "Agent stopped without producing a valid tool call",
                 iterations=iteration,
             )
 
-        assistant_msg: dict = {
-            "role": "assistant",
-            "content": message.content,
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                }
-                for tc in message.tool_calls
-            ],
-        }
-        messages.append(assistant_msg)
+        name = call["tool"]
+        args = call["args"]
 
-        for tc in message.tool_calls:
-            name = tc.function.name
-            args = json.loads(tc.function.arguments)
+        messages.append({"role": "assistant", "content": json.dumps(call)})
 
-            if name == "finish":
-                return LoopResult(
-                    status=args["status"],
-                    summary=args["summary"],
-                    iterations=iteration,
-                )
+        if name == "finish":
+            return LoopResult(
+                status=args.get("status", "uncertain"),
+                summary=args.get("summary", ""),
+                iterations=iteration,
+            )
 
-            if name == "write_file":
-                track_write(args.get("path", ""))
+        if name == "write_file":
+            track_write(args.get("path", ""))
 
-            try:
-                result = tool_dispatch(name, args)
-            except Exception as exc:
-                result = f"Error: {exc}"
+        try:
+            result = tool_dispatch(name, args)
+        except Exception as exc:
+            result = f"Error: {exc}"
 
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": result,
-            })
+        messages.append({"role": "user", "content": f"OBSERVATION: {result}"})
 
     return LoopResult(
         status="uncertain",

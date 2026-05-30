@@ -1,43 +1,26 @@
 import json
-from unittest.mock import MagicMock, patch, call
-from agent.loop import run_loop, LoopResult
+from unittest.mock import MagicMock, patch
+from agent.loop import run_loop, _parse_tool_call
 
 
-def _make_tool_response(name: str, args: dict, call_id: str = "call_1"):
-    tc = MagicMock()
-    tc.id = call_id
-    tc.function.name = name
-    tc.function.arguments = json.dumps(args)
-    msg = MagicMock()
-    msg.content = None
-    msg.tool_calls = [tc]
-    resp = MagicMock()
-    resp.choices[0].message = msg
-    return resp
-
-
-def _make_finish_response(status: str, summary: str, call_id: str = "call_fin"):
-    return _make_tool_response("finish", {"status": status, "summary": summary}, call_id)
-
-
-def _make_text_response(content: str):
+def _make_response(content: str):
     msg = MagicMock()
     msg.content = content
-    msg.tool_calls = None
     resp = MagicMock()
     resp.choices[0].message = msg
     return resp
+
+
+def _call(tool: str, args: dict) -> str:
+    return json.dumps({"tool": tool, "args": args})
 
 
 def test_loop_returns_done_when_finish_called():
-    dispatched = []
-
-    def dispatch(name, args):
-        dispatched.append(name)
-        return "result"
-
-    with patch("agent.loop.litellm.completion", return_value=_make_finish_response("done", "Fixed the bug")):
-        result = run_loop("anthropic/claude-sonnet-4-6", "context", dispatch, lambda p: None)
+    with patch(
+        "agent.loop.litellm.completion",
+        return_value=_make_response(_call("finish", {"status": "done", "summary": "Fixed the bug"})),
+    ):
+        result = run_loop("groq/llama-3.3-70b-versatile", "context", lambda n, a: "", lambda p: None)
 
     assert result.status == "done"
     assert result.summary == "Fixed the bug"
@@ -45,8 +28,11 @@ def test_loop_returns_done_when_finish_called():
 
 
 def test_loop_returns_uncertain_when_finish_uncertain():
-    with patch("agent.loop.litellm.completion", return_value=_make_finish_response("uncertain", "Could not find the bug")):
-        result = run_loop("anthropic/claude-sonnet-4-6", "context", lambda n, a: "", lambda p: None)
+    with patch(
+        "agent.loop.litellm.completion",
+        return_value=_make_response(_call("finish", {"status": "uncertain", "summary": "Could not find the bug"})),
+    ):
+        result = run_loop("groq/llama-3.3-70b-versatile", "context", lambda n, a: "", lambda p: None)
 
     assert result.status == "uncertain"
     assert "Could not find" in result.summary
@@ -54,8 +40,8 @@ def test_loop_returns_uncertain_when_finish_uncertain():
 
 def test_loop_dispatches_tool_then_finishes():
     responses = [
-        _make_tool_response("read_file", {"path": "foo.py"}, "call_1"),
-        _make_finish_response("done", "Fixed it", "call_2"),
+        _make_response(_call("read_file", {"path": "foo.py"})),
+        _make_response(_call("finish", {"status": "done", "summary": "Fixed it"})),
     ]
 
     dispatched = []
@@ -73,24 +59,21 @@ def test_loop_dispatches_tool_then_finishes():
 
 def test_loop_tracks_written_files():
     responses = [
-        _make_tool_response("write_file", {"path": "main.py", "content": "x=1"}, "call_w"),
-        _make_finish_response("done", "Done", "call_f"),
+        _make_response(_call("write_file", {"path": "main.py", "content": "x=1"})),
+        _make_response(_call("finish", {"status": "done", "summary": "Done"})),
     ]
 
     written = []
-    def dispatch(name, args):
-        return "ok"
-
     with patch("agent.loop.litellm.completion", side_effect=responses):
-        result = run_loop("openai/gpt-4o", "context", dispatch, written.append)
+        run_loop("openai/gpt-4o", "context", lambda n, a: "ok", written.append)
 
     assert "main.py" in written
 
 
 def test_loop_returns_uncertain_at_max_iterations():
-    finish_never = _make_tool_response("read_file", {"path": "x.py"}, "call_x")
+    never_finish = _make_response(_call("read_file", {"path": "x.py"}))
 
-    with patch("agent.loop.litellm.completion", return_value=finish_never):
+    with patch("agent.loop.litellm.completion", return_value=never_finish):
         result = run_loop("openai/gpt-4o", "context", lambda n, a: "data", lambda p: None, max_iterations=3)
 
     assert result.status == "uncertain"
@@ -98,8 +81,8 @@ def test_loop_returns_uncertain_at_max_iterations():
     assert "maximum iterations" in result.summary
 
 
-def test_loop_returns_uncertain_on_text_response_no_tool_calls():
-    with patch("agent.loop.litellm.completion", return_value=_make_text_response("I give up")):
+def test_loop_returns_uncertain_on_unparseable_response():
+    with patch("agent.loop.litellm.completion", return_value=_make_response("I give up, nothing to do here")):
         result = run_loop("openai/gpt-4o", "context", lambda n, a: "", lambda p: None)
 
     assert result.status == "uncertain"
@@ -108,8 +91,8 @@ def test_loop_returns_uncertain_on_text_response_no_tool_calls():
 
 def test_loop_handles_tool_dispatch_error_gracefully():
     responses = [
-        _make_tool_response("read_file", {"path": "bad.py"}, "call_e"),
-        _make_finish_response("done", "Recovered", "call_f"),
+        _make_response(_call("read_file", {"path": "bad.py"})),
+        _make_response(_call("finish", {"status": "done", "summary": "Recovered"})),
     ]
 
     def dispatch(name, args):
@@ -121,3 +104,31 @@ def test_loop_handles_tool_dispatch_error_gracefully():
         result = run_loop("openai/gpt-4o", "context", dispatch, lambda p: None)
 
     assert result.status == "done"
+
+
+def test_parse_direct_json():
+    out = _parse_tool_call('{"tool": "read_file", "args": {"path": "x.py"}}')
+    assert out == {"tool": "read_file", "args": {"path": "x.py"}}
+
+
+def test_parse_llama_native_function_tag():
+    raw = '<function=grep_code{"pattern": "grep_files"}></function>'
+    out = _parse_tool_call(raw)
+    assert out == {"tool": "grep_code", "args": {"pattern": "grep_files"}}
+
+
+def test_parse_llama_function_tag_with_inner_args():
+    raw = '<function=read_file>{"path": "agent/search.py"}</function>'
+    out = _parse_tool_call(raw)
+    assert out == {"tool": "read_file", "args": {"path": "agent/search.py"}}
+
+
+def test_parse_fenced_json():
+    raw = 'Here is my call:\n```json\n{"tool": "list_directory", "args": {"path": ""}}\n```'
+    out = _parse_tool_call(raw)
+    assert out == {"tool": "list_directory", "args": {"path": ""}}
+
+
+def test_parse_returns_none_for_garbage():
+    assert _parse_tool_call("Just some prose with no tool call.") is None
+    assert _parse_tool_call("") is None
