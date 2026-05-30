@@ -9,15 +9,10 @@ from agent.loop import run_loop
 def _build_context(issue_title: str, issue_body: str, candidates: list[str], root_listing: str) -> str:
     cand_text = "\n".join(candidates) if candidates else "(none found)"
     return (
-        f"## GitHub Issue\n\n"
-        f"**Title:** {issue_title}\n\n"
-        f"**Body:**\n{issue_body}\n\n"
-        f"---\n\n"
-        f"## File Candidates (from keyword search)\n\n{cand_text}\n\n"
-        f"---\n\n"
-        f"## Repository Root\n\n{root_listing}\n\n"
-        f"---\n\n"
-        f"Start by reading the most relevant file(s). Then find and fix the bug."
+        f"## Issue\n**Title:** {issue_title}\n\n**Body:**\n{issue_body}\n\n"
+        f"## Candidate files (keyword search)\n{cand_text}\n\n"
+        f"## Repo root\n{root_listing}\n\n"
+        f"Read the most relevant file, then fix the bug."
     )
 
 
@@ -37,7 +32,7 @@ def main() -> None:
     repo = Repo(clone_url, branch_name)
     try:
         tools = Tools(repo.path)
-        candidates = find_candidate_files(f"{issue.title}\n{issue.body or ''}", repo.path)
+        candidates = find_candidate_files(f"{issue.title}\n{issue.body or ''}", repo.path, top_n=10)
         root_listing = tools.list_directory("")
         context = _build_context(issue.title, issue.body or "", candidates, root_listing)
 
