@@ -24,7 +24,9 @@ class Tools:
 
     def _safe_path(self, path: str) -> Path:
         resolved = (self.repo_path / path).resolve()
-        if not str(resolved).startswith(str(self.repo_path)):
+        try:
+            resolved.relative_to(self.repo_path)
+        except ValueError:
             raise ToolError(f"Path {path!r} is outside the repository")
         return resolved
 
@@ -75,6 +77,9 @@ class Tools:
                 f"Error: Command not allowed. "
                 f"Allowed prefixes: {', '.join(ALLOWED_COMMAND_PREFIXES)}"
             )
+        # Allowlist is prefix-only; shell=True is required to support multi-word
+        # commands like "python -m pytest". The LLM may chain commands with ';' or '&&',
+        # which this check does not prevent — callers should treat shell output as untrusted.
         try:
             proc = subprocess.run(
                 cmd_stripped,
