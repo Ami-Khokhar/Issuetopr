@@ -21,7 +21,7 @@ class Repo:
     def changed_files(self) -> list[str]:
         proc = subprocess.run(
             ["git", "status", "--short"],
-            cwd=str(self.path), capture_output=True, text=True,
+            cwd=str(self.path), check=True, capture_output=True, text=True,
         )
         files = []
         for line in proc.stdout.splitlines():
