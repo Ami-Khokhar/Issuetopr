@@ -54,11 +54,48 @@ _FN_TAG_BODY_RE = re.compile(r"<function=([A-Za-z_][A-Za-z0-9_]*)\s*>(\{.*?\})\s
 _FENCED_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
+def _escape_string_newlines(text: str) -> str:
+    """Escape raw newlines, tabs, and CRs that appear inside JSON string literals.
+
+    LLMs often emit JSON where multi-line strings (e.g. file content for write_file)
+    contain literal newlines instead of \\n. That violates JSON spec. This walker
+    re-escapes them so json.loads succeeds.
+    """
+    out: list[str] = []
+    in_string = False
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and i + 1 < len(text):
+            out.append(c)
+            out.append(text[i + 1])
+            i += 2
+            continue
+        if c == '"':
+            in_string = not in_string
+            out.append(c)
+            i += 1
+            continue
+        if in_string and c == "\n":
+            out.append("\\n")
+        elif in_string and c == "\r":
+            out.append("\\r")
+        elif in_string and c == "\t":
+            out.append("\\t")
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _try_load(s: str) -> Optional[dict]:
     try:
         obj = json.loads(s)
     except (json.JSONDecodeError, ValueError):
-        return None
+        try:
+            obj = json.loads(_escape_string_newlines(s))
+        except (json.JSONDecodeError, ValueError):
+            return None
     return obj if isinstance(obj, dict) else None
 
 

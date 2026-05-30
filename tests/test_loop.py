@@ -132,3 +132,14 @@ def test_parse_fenced_json():
 def test_parse_returns_none_for_garbage():
     assert _parse_tool_call("Just some prose with no tool call.") is None
     assert _parse_tool_call("") is None
+
+
+def test_parse_handles_unescaped_newlines_inside_strings():
+    # LLMs often emit write_file with raw newlines inside the content field.
+    # That's invalid JSON, but the parser must recover.
+    raw = '{"tool": "write_file", "args": {"path": "x.py", "content": "import os\nimport sys\n"}}'
+    out = _parse_tool_call(raw)
+    assert out is not None
+    assert out["tool"] == "write_file"
+    assert out["args"]["path"] == "x.py"
+    assert out["args"]["content"] == "import os\nimport sys\n"
