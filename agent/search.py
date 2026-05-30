@@ -32,7 +32,7 @@ def grep_files(repo_path: Path, keywords: list[str], top_n: int = 20) -> list[st
     for keyword in keywords:
         try:
             proc = subprocess.run(
-                ["grep", "-rl", *include_flags, keyword, str(repo_path)],
+                ["grep", "-rF", *include_flags, keyword, str(repo_path)],
                 capture_output=True, text=True, timeout=30,
             )
             for path in proc.stdout.strip().splitlines():
