@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Issue → PR Agent — Architecture</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 40px 20px;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: #f8fafc;
+      margin-bottom: 6px;
+      letter-spacing: -0.5px;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #64748b;
+      font-size: 0.9rem;
+      margin-bottom: 48px;
+    }
+
+    /* ── Sections ── */
+    .section {
+      max-width: 960px;
+      margin: 0 auto 56px;
+    }
+
+    .section-title {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #475569;
+      margin-bottom: 16px;
+      border-bottom: 1px solid #1e293b;
+      padding-bottom: 8px;
+    }
+
+    /* ── Pipeline flow ── */
+    .pipeline {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+
+    .pipe-step {
+      flex: 1;
+      min-width: 130px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 0;
+      padding: 18px 14px;
+      position: relative;
+      transition: background 0.15s;
+    }
+    .pipe-step:first-child { border-radius: 10px 0 0 10px; }
+    .pipe-step:last-child  { border-radius: 0 10px 10px 0; }
+
+    .pipe-step:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      right: -14px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 1.2rem;
+      color: #475569;
+      z-index: 1;
+    }
+
+    .pipe-step:hover { background: #263044; }
+
+    .step-num {
+      font-size: 0.65rem;
+      font-weight: 700;
+      color: #6366f1;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 6px;
+    }
+
+    .step-name {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #f1f5f9;
+      margin-bottom: 4px;
+      line-height: 1.3;
+    }
+
+    .step-desc {
+      font-size: 0.72rem;
+      color: #64748b;
+      line-height: 1.4;
+    }
+
+    /* ── Module grid ── */
+    .module-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+    }
+
+    .module-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 20px;
+    }
+
+    .module-card.highlight {
+      border-color: #6366f1;
+      background: #1e1f3b;
+    }
+
+    .module-filename {
+      font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+      font-size: 0.8rem;
+      color: #818cf8;
+      margin-bottom: 8px;
+    }
+
+    .module-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin-bottom: 10px;
+    }
+
+    .module-desc {
+      font-size: 0.8rem;
+      color: #94a3b8;
+      line-height: 1.55;
+      margin-bottom: 14px;
+    }
+
+    .tag-row { display: flex; flex-wrap: wrap; gap: 6px; }
+
+    .tag {
+      font-size: 0.7rem;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 99px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      color: #94a3b8;
+    }
+
+    .tag.green  { color: #4ade80; border-color: #166534; }
+    .tag.blue   { color: #60a5fa; border-color: #1d4ed8; }
+    .tag.purple { color: #a78bfa; border-color: #5b21b6; }
+    .tag.orange { color: #fb923c; border-color: #92400e; }
+    .tag.red    { color: #f87171; border-color: #991b1b; }
+
+    /* ── ReAct loop diagram ── */
+    .react-loop {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+    }
+
+    .react-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+      justify-content: center;
+      margin: 4px 0;
+    }
+
+    .react-box {
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      text-align: center;
+      min-width: 130px;
+    }
+
+    .react-box.llm      { background: #1d1b4e; border: 1px solid #4f46e5; color: #a5b4fc; }
+    .react-box.tool     { background: #0f2a1a; border: 1px solid #16a34a; color: #4ade80; }
+    .react-box.finish   { background: #2a0f1a; border: 1px solid #dc2626; color: #f87171; }
+    .react-box.observe  { background: #1a1a2a; border: 1px solid #475569; color: #94a3b8; }
+
+    .react-arrow {
+      font-size: 1.1rem;
+      color: #475569;
+    }
+
+    .react-loop-arrow {
+      width: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 8px;
+      margin: 6px 0;
+    }
+
+    .react-loop-line {
+      height: 2px;
+      flex: 1;
+      max-width: 200px;
+      background: linear-gradient(to right, transparent, #334155);
+    }
+    .react-loop-line.rev {
+      background: linear-gradient(to left, transparent, #334155);
+    }
+
+    .react-label {
+      font-size: 0.7rem;
+      color: #475569;
+      letter-spacing: 0.06em;
+    }
+
+    .tool-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: center;
+      margin-top: 16px;
+    }
+
+    .tool-pill {
+      font-family: "SF Mono", monospace;
+      font-size: 0.75rem;
+      padding: 4px 12px;
+      border-radius: 6px;
+      background: #0f2a1a;
+      border: 1px solid #166534;
+      color: #4ade80;
+    }
+
+    .tool-pill.term {
+      background: #2a0f1a;
+      border-color: #991b1b;
+      color: #f87171;
+    }
+
+    /* ── Decision table ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+
+    th {
+      text-align: left;
+      padding: 10px 14px;
+      background: #1e293b;
+      color: #94a3b8;
+      font-weight: 600;
+      border-bottom: 1px solid #334155;
+    }
+
+    td {
+      padding: 10px 14px;
+      border-bottom: 1px solid #1e293b;
+      color: #cbd5e1;
+      vertical-align: top;
+    }
+
+    tr:hover td { background: #1e293b44; }
+
+    td:first-child { color: #f87171; font-family: "SF Mono", monospace; font-size: 0.76rem; }
+    td:nth-child(2) { color: #94a3b8; }
+    td:last-child { color: #4ade80; }
+
+    /* ── Env vars ── */
+    .env-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 12px;
+    }
+
+    .env-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .env-name {
+      font-family: "SF Mono", monospace;
+      font-size: 0.8rem;
+      color: #fb923c;
+    }
+
+    .env-ex {
+      font-family: "SF Mono", monospace;
+      font-size: 0.72rem;
+      color: #475569;
+    }
+
+    .env-desc {
+      font-size: 0.76rem;
+      color: #64748b;
+      margin-top: 2px;
+    }
+
+    .req-badge {
+      display: inline-block;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: #1e3a1e;
+      color: #4ade80;
+      border: 1px solid #166534;
+    }
+
+    .req-badge.opt {
+      background: #1e1e2e;
+      color: #818cf8;
+      border-color: #4338ca;
+    }
+
+    /* ── File tree ── */
+    .file-tree {
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      padding: 20px 24px;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.8rem;
+      line-height: 1.9;
+      color: #64748b;
+    }
+
+    .file-tree .dir  { color: #60a5fa; }
+    .file-tree .file { color: #94a3b8; }
+    .file-tree .ann  { color: #475569; font-style: italic; }
+    .file-tree .key  { color: #4ade80; }
+
+    /* ── Status badges in title area ── */
+    .badge-row {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 48px;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 4px 12px;
+      border-radius: 99px;
+    }
+
+    .badge.green  { background: #0f2a1a; color: #4ade80; border: 1px solid #166534; }
+    .badge.blue   { background: #0f1e3a; color: #60a5fa; border: 1px solid #1d4ed8; }
+    .badge.purple { background: #1a0f3a; color: #a78bfa; border: 1px solid #5b21b6; }
+    .badge.orange { background: #2a1a0f; color: #fb923c; border: 1px solid #92400e; }
+  </style>
+</head>
+<body>
+
+  <h1>GitHub Issue → PR Agent</h1>
+  <p class="subtitle">Architecture overview — how the agent reads an issue and produces a pull request</p>
+
+  <div class="badge-row">
+    <span class="badge green">✓ 41 tests passing</span>
+    <span class="badge blue">Python 3.11+</span>
+    <span class="badge purple">litellm · PyGithub · GitPython</span>
+    <span class="badge orange">GitHub Actions</span>
+  </div>
+
+  <!-- ── 1. Pipeline ── -->
+  <div class="section">
+    <div class="section-title">End-to-End Pipeline</div>
+    <div class="pipeline">
+      <div class="pipe-step">
+        <div class="step-num">Trigger</div>
+        <div class="step-name">Issue labeled</div>
+        <div class="step-desc">GitHub fires webhook when <code>agent-fix</code> label is applied to an issue</div>
+      </div>
+      <div class="pipe-step">
+        <div class="step-num">Step 1</div>
+        <div class="step-name">Fetch issue</div>
+        <div class="step-desc">GitHub API: read issue title, body, and repo name</div>
+      </div>
+      <div class="pipe-step">
+        <div class="step-num">Step 2</div>
+        <div class="step-name">Clone repo</div>
+        <div class="step-desc"><code>git clone --depth=1</code> into temp dir; create feature branch</div>
+      </div>
+      <div class="pipe-step">
+        <div class="step-num">Step 3</div>
+        <div class="step-name">Find files</div>
+        <div class="step-desc">Keyword extraction → grep → ranked candidate file list (top 20)</div>
+      </div>
+      <div class="pipe-step">
+        <div class="step-num">Step 4</div>
+        <div class="step-name">ReAct loop</div>
+        <div class="step-desc">LLM calls tools iteratively to explore, edit, and test the fix</div>
+      </div>
+      <div class="pipe-step">
+        <div class="step-num">Step 5</div>
+        <div class="step-name">Open PR</div>
+        <div class="step-desc">Commit changes, push branch, create ready or draft PR via GitHub API</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 2. ReAct loop ── -->
+  <div class="section">
+    <div class="section-title">ReAct Agent Loop (loop.py)</div>
+    <div class="react-loop">
+
+      <div class="react-row">
+        <div class="react-box observe">Initial context<br><small>issue + candidates + dir listing</small></div>
+      </div>
+
+      <div class="react-row"><div class="react-arrow">↓</div></div>
+
+      <div class="react-row">
+        <div class="react-box llm">LLM (litellm)<br><small>Reason → pick tool</small></div>
+      </div>
+
+      <div class="react-row"><div class="react-arrow">↓ tool_call</div></div>
+
+      <div class="react-row">
+        <div class="react-box tool">Tool dispatch<br><small>run tool, capture output</small></div>
+        <div class="react-arrow">→</div>
+        <div class="react-box finish">finish()<br><small>done / uncertain</small></div>
+      </div>
+
+      <div class="react-loop-arrow">
+        <div class="react-loop-line rev"></div>
+        <div class="react-label">observation appended to messages → repeat (max 15 iterations)</div>
+        <div class="react-loop-line"></div>
+      </div>
+
+      <div class="tool-list">
+        <span class="tool-pill">read_file</span>
+        <span class="tool-pill">write_file</span>
+        <span class="tool-pill">grep_code</span>
+        <span class="tool-pill">list_directory</span>
+        <span class="tool-pill">run_shell</span>
+        <span class="tool-pill term">finish(done)</span>
+        <span class="tool-pill term">finish(uncertain)</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 3. Module breakdown ── -->
+  <div class="section">
+    <div class="section-title">Modules</div>
+    <div class="module-grid">
+
+      <div class="module-card highlight">
+        <div class="module-filename">agent/main.py</div>
+        <div class="module-title">Orchestrator</div>
+        <div class="module-desc">Entry point. Reads env vars, wires all components together, decides ready vs. draft PR based on agent outcome and whether files were changed.</div>
+        <div class="tag-row">
+          <span class="tag purple">entry point</span>
+          <span class="tag blue">pipeline control</span>
+        </div>
+      </div>
+
+      <div class="module-card">
+        <div class="module-filename">agent/loop.py</div>
+        <div class="module-title">ReAct Loop</div>
+        <div class="module-desc">Pure function — takes a model name, initial context, and callbacks. No GitHub or git knowledge. Calls litellm, dispatches tools, returns a LoopResult.</div>
+        <div class="tag-row">
+          <span class="tag green">pure</span>
+          <span class="tag purple">litellm</span>
+          <span class="tag blue">max 15 iterations</span>
+        </div>
+      </div>
+
+      <div class="module-card">
+        <div class="module-filename">agent/tools.py</div>
+        <div class="module-title">Tool Implementations</div>
+        <div class="module-desc">Sandboxed file + shell tools. All paths validated with <code>Path.relative_to()</code> to prevent traversal. Shell commands allowlisted to test runners only.</div>
+        <div class="tag-row">
+          <span class="tag red">sandboxed</span>
+          <span class="tag orange">allowlisted shell</span>
+          <span class="tag green">no network</span>
+        </div>
+      </div>
+
+      <div class="module-card">
+        <div class="module-filename">agent/search.py</div>
+        <div class="module-title">Keyword / Grep Search</div>
+        <div class="module-desc">Strips stop words from the issue text, greps the repo for each keyword, deduplicates and ranks by hit count. Returns top-N file candidates for the LLM warm start.</div>
+        <div class="tag-row">
+          <span class="tag blue">no embeddings</span>
+          <span class="tag green">grep -rl</span>
+        </div>
+      </div>
+
+      <div class="module-card">
+        <div class="module-filename">agent/github_client.py</div>
+        <div class="module-title">GitHub API Client</div>
+        <div class="module-desc">Owns all GitHub API calls via PyGithub. Fetches issues, creates PRs (ready or draft), posts comments. No other module touches the GitHub API.</div>
+        <div class="tag-row">
+          <span class="tag purple">PyGithub</span>
+          <span class="tag blue">single responsibility</span>
+        </div>
+      </div>
+
+      <div class="module-card">
+        <div class="module-filename">agent/repo.py</div>
+        <div class="module-title">Git Repo Manager</div>
+        <div class="module-desc">Owns all git operations: shallow clone, branch creation, commit, and push. Uses token-authenticated remote URL. Cleans up temp directory on exit.</div>
+        <div class="tag-row">
+          <span class="tag orange">subprocess git</span>
+          <span class="tag green">auto cleanup</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── 4. Outcome decision ── -->
+  <div class="section">
+    <div class="section-title">PR Outcome Decision</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Agent says</th>
+          <th>Files changed?</th>
+          <th>Outcome</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>finish(done)</td>
+          <td>Yes</td>
+          <td>✅ Ready PR — "Closes #N", label: agent-generated</td>
+        </tr>
+        <tr>
+          <td>finish(done)</td>
+          <td>No</td>
+          <td>⚠️ Draft PR — treated as uncertain (no change = no fix)</td>
+        </tr>
+        <tr>
+          <td>finish(uncertain)</td>
+          <td>Yes</td>
+          <td>📝 Draft PR + comment on issue: "Agent opened draft PR #N"</td>
+        </tr>
+        <tr>
+          <td>finish(uncertain)</td>
+          <td>No</td>
+          <td>💬 Comment on issue only: "Agent could not fix this issue"</td>
+        </tr>
+        <tr>
+          <td>Max iterations hit</td>
+          <td>Any</td>
+          <td>Same as finish(uncertain)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ── 5. Shell allowlist ── -->
+  <div class="section">
+    <div class="section-title">run_shell Allowlist</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Allowed prefix</th>
+          <th>Use case</th>
+          <th>Blocked example</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>pytest / python -m pytest</td>
+          <td>Python test runner</td>
+          <td rowspan="5" style="color:#f87171">rm -rf / curl / pip install / git push → error returned to LLM</td>
+        </tr>
+        <tr>
+          <td>npm test / npm run test</td>
+          <td>Node test runner</td>
+        </tr>
+        <tr>
+          <td>go test</td>
+          <td>Go test runner</td>
+        </tr>
+        <tr>
+          <td>cargo test</td>
+          <td>Rust test runner</td>
+        </tr>
+        <tr>
+          <td>make test</td>
+          <td>Makefile test target</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ── 6. Env vars ── -->
+  <div class="section">
+    <div class="section-title">Environment Variables</div>
+    <div class="env-grid">
+      <div class="env-card">
+        <div class="env-name">GITHUB_TOKEN <span class="req-badge">required</span></div>
+        <div class="env-ex">→ secrets.GITHUB_TOKEN</div>
+        <div class="env-desc">GitHub Actions token with contents:write, pull-requests:write, issues:write</div>
+      </div>
+      <div class="env-card">
+        <div class="env-name">REPO_NAME <span class="req-badge">required</span></div>
+        <div class="env-ex">→ github.repository</div>
+        <div class="env-desc">Full repo name, e.g. <code>owner/repo</code></div>
+      </div>
+      <div class="env-card">
+        <div class="env-name">ISSUE_NUMBER <span class="req-badge">required</span></div>
+        <div class="env-ex">→ github.event.issue.number</div>
+        <div class="env-desc">Issue number that triggered the workflow</div>
+      </div>
+      <div class="env-card">
+        <div class="env-name">LLM_PROVIDER <span class="req-badge">required</span></div>
+        <div class="env-ex">anthropic/claude-sonnet-4-6</div>
+        <div class="env-desc">Any litellm-compatible model string. Controls which LLM the agent uses.</div>
+      </div>
+      <div class="env-card">
+        <div class="env-name">ANTHROPIC_API_KEY <span class="req-badge opt">if Anthropic</span></div>
+        <div class="env-ex">sk-ant-…</div>
+        <div class="env-desc">Required when LLM_PROVIDER is an Anthropic model</div>
+      </div>
+      <div class="env-card">
+        <div class="env-name">OPENAI_API_KEY <span class="req-badge opt">if OpenAI</span></div>
+        <div class="env-ex">sk-…</div>
+        <div class="env-desc">Required when LLM_PROVIDER is an OpenAI model</div>
+      </div>
+      <div class="env-card">
+        <div class="env-name">MAX_ITERATIONS <span class="req-badge opt">optional</span></div>
+        <div class="env-ex">15 (default)</div>
+        <div class="env-desc">Hard cap on ReAct loop iterations before treating as uncertain</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 7. File tree ── -->
+  <div class="section">
+    <div class="section-title">File Structure</div>
+    <div class="file-tree">
+      <span class="dir">issuetopr/</span><br>
+      ├── <span class="key">agent/</span><br>
+      │   ├── <span class="file">__init__.py</span><br>
+      │   ├── <span class="key">main.py</span>           <span class="ann">← orchestrator / entry point</span><br>
+      │   ├── <span class="key">loop.py</span>           <span class="ann">← ReAct agent loop (pure)</span><br>
+      │   ├── <span class="key">tools.py</span>          <span class="ann">← sandboxed tool implementations</span><br>
+      │   ├── <span class="key">search.py</span>         <span class="ann">← keyword extraction + grep ranking</span><br>
+      │   ├── <span class="key">github_client.py</span>  <span class="ann">← all GitHub API calls</span><br>
+      │   └── <span class="key">repo.py</span>           <span class="ann">← git clone / commit / push</span><br>
+      ├── <span class="dir">tests/</span><br>
+      │   ├── <span class="file">conftest.py</span>       <span class="ann">← shared tmp_repo fixture</span><br>
+      │   ├── <span class="file">test_main.py</span><br>
+      │   ├── <span class="file">test_loop.py</span><br>
+      │   ├── <span class="file">test_tools.py</span><br>
+      │   ├── <span class="file">test_search.py</span><br>
+      │   ├── <span class="file">test_repo.py</span><br>
+      │   └── <span class="file">test_github_client.py</span><br>
+      ├── <span class="dir">.github/workflows/</span><br>
+      │   └── <span class="file">agent.yml</span>         <span class="ann">← triggered on issues: labeled</span><br>
+      ├── <span class="file">pyproject.toml</span>        <span class="ann">← deps: litellm, PyGithub, gitpython</span><br>
+      ├── <span class="file">.env.example</span>          <span class="ann">← env var documentation</span><br>
+      └── <span class="file">architecture.html</span>     <span class="ann">← this file</span><br>
+    </div>
+  </div>
+
+</body>
+</html>
